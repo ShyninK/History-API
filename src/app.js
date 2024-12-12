@@ -16,6 +16,31 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Welcome route
+app.get("/", (req, res) => {
+  res.json({
+    success: true,
+    message: "Welcome to Capstone API",
+    version: "1.0.0",
+    endpoints: {
+      soundboards: "/api/soundboards",
+      history: "/api/history",
+      profile: "/api/profile",
+      feedback: "/api/feedback",
+    },
+  });
+});
+
+// Health check route
+app.get("/health", (req, res) => {
+  res.json({
+    success: true,
+    timestamp: new Date(),
+    uptime: process.uptime(),
+    status: "healthy",
+  });
+});
+
 // Database setup with Sequelize
 const sequelize = new Sequelize(
   process.env.DB_NAME,
@@ -30,6 +55,9 @@ const sequelize = new Sequelize(
       min: 0,
       acquire: 30000,
       idle: 10000,
+    },
+    dialectOptions: {
+      connectTimeout: 60000,
     },
   }
 );
@@ -56,16 +84,24 @@ const Soundboard = sequelize.define("Soundboard", {
 });
 
 // Google Cloud Setup
-const storage = new Storage({
-  keyFilename: path.join(__dirname, "gcp-key.json"),
-  projectId: process.env.GCP_PROJECT_ID,
-});
+let storage;
+let ttsClient;
+let bucket;
 
-const bucket = storage.bucket(process.env.GCP_BUCKET_NAME);
+try {
+  storage = new Storage({
+    keyFilename: path.join(__dirname, "gcp-key.json"),
+    projectId: process.env.GCP_PROJECT_ID,
+  });
 
-const ttsClient = new textToSpeech.TextToSpeechClient({
-  keyFilename: path.join(__dirname, "gcp-key.json"),
-});
+  bucket = storage.bucket(process.env.GCP_BUCKET_NAME);
+
+  ttsClient = new textToSpeech.TextToSpeechClient({
+    keyFilename: path.join(__dirname, "gcp-key.json"),
+  });
+} catch (error) {
+  console.error("Error initializing Google Cloud services:", error);
+}
 
 // Multer configuration for file uploads
 const upload = multer({
@@ -75,7 +111,7 @@ const upload = multer({
     if (allowedMimes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error("File harus berupa gambar."));
+      cb(new Error("File harus berupa gambar (JPG, JPEG, atau PNG)."));
     }
   },
   limits: {
@@ -85,6 +121,10 @@ const upload = multer({
 
 // Helper Functions
 const generateSpeech = async (text) => {
+  if (!ttsClient) {
+    throw new Error("Text-to-Speech client not initialized");
+  }
+
   try {
     const request = {
       input: { text },
@@ -95,11 +135,16 @@ const generateSpeech = async (text) => {
     const [response] = await ttsClient.synthesizeSpeech(request);
     return response.audioContent;
   } catch (error) {
+    console.error("Speech generation error:", error);
     throw new Error(`Error generating speech: ${error.message}`);
   }
 };
 
 const uploadToGCS = async (buffer, filename, contentType = "audio/mpeg") => {
+  if (!bucket) {
+    throw new Error("Storage bucket not initialized");
+  }
+
   const file = bucket.file(filename);
 
   try {
@@ -113,6 +158,7 @@ const uploadToGCS = async (buffer, filename, contentType = "audio/mpeg") => {
     const publicUrl = `https://storage.googleapis.com/${process.env.GCP_BUCKET_NAME}/${filename}`;
     return publicUrl;
   } catch (error) {
+    console.error("GCS upload error:", error);
     throw new Error(
       `Error uploading to Google Cloud Storage: ${error.message}`
     );
@@ -122,12 +168,15 @@ const uploadToGCS = async (buffer, filename, contentType = "audio/mpeg") => {
 // API ROUTES
 
 // Soundboard Routes
-app.post("/api/soundboards", async (req, res) => {
+app.post("/api/soundboards", async (req, res, next) => {
   try {
     const { text } = req.body;
 
     if (!text) {
-      return res.status(400).json({ error: "Text is required" });
+      return res.status(400).json({
+        success: false,
+        error: "Text is required",
+      });
     }
 
     console.log("Generating speech for text:", text);
@@ -150,15 +199,11 @@ app.post("/api/soundboards", async (req, res) => {
       data: soundboard,
     });
   } catch (error) {
-    console.error("Error creating soundboard:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to create soundboard",
-    });
+    next(error);
   }
 });
 
-app.get("/api/soundboards", async (req, res) => {
+app.get("/api/soundboards", async (req, res, next) => {
   try {
     const soundboards = await Soundboard.findAll({
       order: [["createdAt", "DESC"]],
@@ -170,16 +215,12 @@ app.get("/api/soundboards", async (req, res) => {
       data: soundboards,
     });
   } catch (error) {
-    console.error("Error fetching soundboards:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch soundboards",
-    });
+    next(error);
   }
 });
 
 // History Routes
-app.post("/api/history", async (req, res) => {
+app.post("/api/history", async (req, res, next) => {
   try {
     const { title, message } = req.body;
 
@@ -191,7 +232,7 @@ app.post("/api/history", async (req, res) => {
     }
 
     const [result] = await sequelize.query(
-      "INSERT INTO history (title, message) VALUES (?, ?)",
+      "INSERT INTO history ([title], [message], [created_at], [updated_at]) VALUES (?, ?, NOW(), NOW())",
       {
         replacements: [title, message],
         type: Sequelize.QueryTypes.INSERT,
@@ -204,17 +245,15 @@ app.post("/api/history", async (req, res) => {
         id: result,
         title,
         message,
+        created_at,
       },
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    next(error);
   }
 });
 
-app.get("/api/history", async (req, res) => {
+app.get("/api/history", async (req, res, next) => {
   try {
     const [histories] = await sequelize.query(
       "SELECT * FROM history ORDER BY created_at DESC",
@@ -226,14 +265,11 @@ app.get("/api/history", async (req, res) => {
       data: histories,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    next(error);
   }
 });
 
-app.get("/api/history/:id", async (req, res) => {
+app.get("/api/history/:id", async (req, res, next) => {
   try {
     const [history] = await sequelize.query(
       "SELECT * FROM history WHERE id = ?",
@@ -246,7 +282,7 @@ app.get("/api/history/:id", async (req, res) => {
     if (!history) {
       return res.status(404).json({
         success: false,
-        message: "Tidak memiliki akses",
+        message: "History tidak ditemukan",
       });
     }
 
@@ -255,15 +291,12 @@ app.get("/api/history/:id", async (req, res) => {
       data: history,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    next(error);
   }
 });
 
 // Profile Routes
-app.get("/api/profile", async (req, res) => {
+app.get("/api/profile", async (req, res, next) => {
   try {
     const [profile] = await sequelize.query("SELECT * FROM profile LIMIT 1", {
       type: Sequelize.QueryTypes.SELECT,
@@ -281,62 +314,60 @@ app.get("/api/profile", async (req, res) => {
       data: profile,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    next(error);
   }
 });
 
-app.put("/api/profile", upload.single("profile_picture"), async (req, res) => {
-  try {
-    const { name } = req.body;
-    let profilePictureUrl = null;
+app.put(
+  "/api/profile",
+  upload.single("profile_picture"),
+  async (req, res, next) => {
+    try {
+      const { name } = req.body;
+      let profilePictureUrl = null;
 
-    if (!name) {
-      return res.status(400).json({
-        success: false,
-        message: "Name is required",
+      if (!name) {
+        return res.status(400).json({
+          success: false,
+          message: "Name is required",
+        });
+      }
+
+      if (req.file) {
+        const filename = `profiles/${Date.now()}-${req.file.originalname}`;
+        profilePictureUrl = await uploadToGCS(
+          req.file.buffer,
+          filename,
+          req.file.mimetype
+        );
+      }
+
+      const updateQuery = profilePictureUrl
+        ? "UPDATE profile SET name = ?, profile_picture_url = ?, updated_at = NOW() WHERE id = 1"
+        : "UPDATE profile SET name = ?, updated_at = NOW() WHERE id = 1";
+
+      const params = profilePictureUrl ? [name, profilePictureUrl] : [name];
+
+      await sequelize.query(updateQuery, {
+        replacements: params,
+        type: Sequelize.QueryTypes.UPDATE,
       });
+
+      res.json({
+        success: true,
+        data: {
+          name,
+          profile_picture_url: profilePictureUrl,
+        },
+      });
+    } catch (error) {
+      next(error);
     }
-
-    if (req.file) {
-      const filename = `profiles/${Date.now()}-${req.file.originalname}`;
-      profilePictureUrl = await uploadToGCS(
-        req.file.buffer,
-        filename,
-        req.file.mimetype
-      );
-    }
-
-    const updateQuery = profilePictureUrl
-      ? "UPDATE profile SET name = ?, profile_picture_url = ? WHERE id = 1"
-      : "UPDATE profile SET name = ? WHERE id = 1";
-
-    const params = profilePictureUrl ? [name, profilePictureUrl] : [name];
-
-    await sequelize.query(updateQuery, {
-      replacements: params,
-      type: Sequelize.QueryTypes.UPDATE,
-    });
-
-    res.json({
-      success: true,
-      data: {
-        name,
-        profile_picture_url: profilePictureUrl,
-      },
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
   }
-});
+);
 
 // Feedback Routes
-app.post("/api/feedback", async (req, res) => {
+app.post("/api/feedback", async (req, res, next) => {
   try {
     const { comment, rating } = req.body;
 
@@ -355,7 +386,7 @@ app.post("/api/feedback", async (req, res) => {
     }
 
     const [result] = await sequelize.query(
-      "INSERT INTO feedback (comment, rating) VALUES (?, ?)",
+      "INSERT INTO feedback (comment, rating, created_at, updated_at) VALUES (?, ?, NOW(), NOW())",
       {
         replacements: [comment, rating],
         type: Sequelize.QueryTypes.INSERT,
@@ -371,27 +402,60 @@ app.post("/api/feedback", async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    next(error);
   }
+});
+
+// Handle 404
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: "Route not found",
+  });
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  console.error("Error:", err);
+
+  // Multer error handling
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({
+      success: false,
+      message: "File upload error",
+      error: err.message,
+    });
+  }
+
+  // Sequelize error handling
+  if (err.name === "SequelizeValidationError") {
+    return res.status(400).json({
+      success: false,
+      message: "Validation error",
+      errors: err.errors.map((e) => e.message),
+    });
+  }
+
+  // Default error
   res.status(500).json({
     success: false,
-    message: err.message,
+    message: "Internal server error",
+    error:
+      process.env.NODE_ENV === "development"
+        ? err.message
+        : "Something went wrong",
   });
 });
 
 // Server & Database Initialization
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 const start = async () => {
   try {
+    // Test database connection
+    await sequelize.authenticate();
+    console.log("Database connection established successfully");
+
     // Sync database
     await sequelize.sync();
     console.log("Database synced successfully");
@@ -401,6 +465,8 @@ const start = async () => {
       console.log(`Server berjalan di port ${PORT}`);
       console.log(`Test API at: http://localhost:${PORT}`);
       console.log("\nAvailable routes:");
+      console.log("- GET    /");
+      console.log("- GET    /health");
       console.log("- POST   /api/soundboards");
       console.log("- GET    /api/soundboards");
       console.log("- POST   /api/history");

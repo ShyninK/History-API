@@ -19,6 +19,7 @@
     "multer": "^1.4.5-lts.1",
     "mysql": "^2.18.1",
     "mysql2": "^3.11.4",
+    "rest-api-capstone": "file:",
     "sequelize": "^6.37.5",
     "uuid": "^11.0.3"
   }

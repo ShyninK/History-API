@@ -1,0 +1,28 @@
+1. Post Email >> HISTORY
+
+POST | base-url/api/history/email
+Body : RAW
+{
+    "title": "string",
+    "email": "yusrilkingsr07@gmail.com"
+}
+
+
+2. Post Data >> MESSAGE
+
+POST | base-url/api/history/:email
+Body : RAW
+{
+    "message": "Test n - Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+    "is_speech_to_text": true/false
+}
+
+
+3. Get Data >> HISTORY + MESSAGE
+
+GET | base-url/api/history/:email
+
+
+4. Delete Data >> HISTORY + MESSAGE
+
+DELETE | base-url/api/history/:email	

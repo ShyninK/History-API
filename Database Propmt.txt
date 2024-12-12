@@ -1,0 +1,57 @@
+gcloud sql instances create handlips-db \
+    --database-version=MYSQL_8_0 \
+    --tier=db-g1-small \
+    --region=asia-southeast2 \
+    --root-password=wahhab99
+
+
+gcloud sql databases create my_app_db --instance=handlips-db
+
+
+gcloud sql connect handlips-db --user=root <<EOF
+
+CREATE DATABASE IF NOT EXISTS my_app_db;
+USE my_app_db;
+
+CREATE TABLE histori (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE profil (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    profile_picture_url VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE feedback (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    comment TEXT NOT NULL,
+    rating INT NOT NULL CHECK (rating BETWEEN 1 AND 4),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+EOF
+
+
+
+
+endpoint:
+http://localhost:2004/api/history (POST,GET)
+{
+    "title": "Contoh Judul",
+    "message": "Ini adalah isi pesan"
+}
+
+http://localhost:2004/api/history/:id (GET)
+http://localhost:2004/api/profile (GET, PUT)
+
+http://localhost:2004/api/feedback (POST)
+{
+    "comment": "Aplikasi sangat membantu",
+    "rating": 4
+}
